@@ -1,216 +1,146 @@
-const DEMO_USER = { login: 'admin', password: 'admin' };
+// admin logic: login, fetch, export, delete
+const API = "/api";
+const USERS = [
+  { login: "admin", password: "admin", role: "admin" },
+  { login: "reseption", password: "Riviera2025!", role: "reseption" }
+];
+const SECRET = process?.env?.SECRET || "riviera_secret";
 
-function isLoggedIn(){
-  return sessionStorage.getItem('riviera_admin') === '1';
-}
+function saveToken(token){ localStorage.setItem("riviera_token", token); }
+function getToken(){ return localStorage.getItem("riviera_token"); }
+function clearToken(){ localStorage.removeItem("riviera_token"); }
 
-function setLoggedIn(v){
-  if (v) sessionStorage.setItem('riviera_admin','1');
-  else sessionStorage.removeItem('riviera_admin');
-}
+function showLoginError(show){ document.getElementById("loginError").style.display = show ? "block":"none"; }
 
-function getRequests(){
-  return JSON.parse(localStorage.getItem('riviera_requests') || '[]');
-}
-
-function formatDate(iso){
-  try { return new Date(iso).toLocaleString(); } catch { return iso; }
-}
-
-function filterRequests(requests, q){
-  if (!q) return requests;
-  const s = q.toLowerCase();
-  return requests.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(s)));
-}
-
-function filterByDateRange(requests, range){
-  if (!range || range === 'all') return requests;
-  const now = new Date();
-  const from = new Date(now);
-  switch(range){
-    case 'day': from.setDate(now.getDate() - 1); break;
-    case 'week': from.setDate(now.getDate() - 7); break;
-    case 'month': from.setMonth(now.getMonth() - 1); break;
-    case '3months': from.setMonth(now.getMonth() - 3); break;
-    case '6months': from.setMonth(now.getMonth() - 6); break;
-    case 'year': from.setFullYear(now.getFullYear() - 1); break;
-    default: return requests;
-  }
-  const fromMs = from.getTime();
-  return requests.filter(r => {
-    const t = Date.parse(r.createdAt);
-    return !isNaN(t) && t >= fromMs;
+async function loginRequest(login, password){
+  const res = await fetch(API + "/login", {
+    method: "POST",
+    headers: { "Content-Type":"application/json" },
+    body: JSON.stringify({ login, password })
   });
+  return res.json();
 }
 
-function safe(v){
-  return (v === undefined || v === null || String(v).trim() === '') ? '-' : String(v);
-}
-
-// Преобразует служебные значения цели в человекочитаемые на выбранном языке
-function formatPurpose(purpose, lang){
-  const language = (lang || 'ru').toLowerCase();
-  const dictByLang = {
-    ru: { by_request: 'По заявке', by_invite: 'По приглашению' },
-    kz: { by_request: 'Өтінім бойынша', by_invite: 'Шақыру бойынша' },
-    en: { by_request: 'By request', by_invite: 'By invitation' },
-  };
-  const dict = dictByLang[language] || dictByLang.ru;
-  return dict[purpose] || purpose;
-}
-
-// Отображает язык в верхнем регистре и добавляет соответствующий флаг
-function formatLang(lang){
-  const code = (lang || '').toLowerCase();
-  // Возвращаем HTML со значком флага (через CSS background-image) и подписью
-  const map = {
-    ru: { cls: 'flag-ru', label: 'RU' },
-    kz: { cls: 'flag-kz', label: 'KZ' },
-    en: { cls: 'flag-gb', label: 'EN' },
-  };
-  const item = map[code];
-  if (!item) return code ? code.toUpperCase() : '-';
-  return `<span class="flag ${item.cls}" aria-hidden="true"></span> ${item.label}`;
-}
-
-function renderTable(rows){
-  const tbody = document.querySelector('#requestsTable tbody');
-  tbody.innerHTML = '';
-  rows.forEach((r, idx) => {
-    const tr = document.createElement('tr');
+function renderTable(data){
+  const tbody = document.querySelector("#requestsTable tbody");
+  tbody.innerHTML = "";
+  data.forEach((r, idx) => {
+    const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td data-label="№">${idx + 1}</td>
-      <td data-label="Дата и время">${safe(formatDate(r.createdAt))}</td>
-      <td data-label="ФИО">${safe(r.fullName)}</td>
-      <td data-label="Куда">${safe(r.destination)}</td>
-      <td data-label="От кого">${safe(r.fromWhom)}</td>
-      <td data-label="Цель">${safe(formatPurpose(r.purpose, r.lang))}</td>
-      <td data-label="Язык" class="lang-cell">${safe(formatLang(r.lang))}</td>
+      <td><input class="row-chk" data-id="${idx}" type="checkbox"></td>
+      <td>${r.createdAt || ""}</td>
+      <td>${r.fullName || ""}</td>
+      <td>${r.destination || ""}</td>
+      <td>${r.fromWhom || ""}</td>
+      <td>${r.purpose || ""}</td>
+      <td>${r.lang || ""}</td>
     `;
     tbody.appendChild(tr);
   });
 }
 
-function paginate(rows, page, pageSize){
-  const total = rows.length;
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(Math.max(1, page), pages);
-  const start = (current - 1) * pageSize;
-  const slice = rows.slice(start, start + pageSize);
-  return { slice, current, pages, total };
+async function loadRequests(){
+  const token = getToken();
+  if (!token) return;
+  const res = await fetch(API + "/requests", { headers: { "Authorization":"Bearer "+token } });
+  if (res.status === 401){ logout(); return; }
+  const data = await res.json();
+  renderTable(data);
+  return data;
 }
 
-function exportCSV(rows){
-  const headers = ['createdAt','fullName','destination','fromWhom','purpose','lang'];
-  const csv = [headers.join(',')].concat(rows.map(r => headers.map(h => {
-    const value = (r[h] ?? '').toString().replaceAll('"','""');
-    return `"${value}"`;
-  }).join(','))).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+function enableButtonsForRole(role){
+  const deleteBtn = document.getElementById("deleteSelectedBtn");
+  if (role === "admin") deleteBtn.style.display = "inline-block"; else deleteBtn.style.display = "none";
+}
+
+function downloadCSV(data, filename){
+  if (!data) data = [];
+  const headers = ["createdAt","fullName","destination","fromWhom","purpose","lang"];
+  const rows = data.map(r => headers.map(h => `"${(r[h]||"").toString().replace(/"/g,'""')}"`).join(","));
+  const csv = [headers.join(","), ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'requests.csv'; a.click();
-  URL.revokeObjectURL(url);
+  const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
 }
 
-function exportXLSX(rows){
-  // Подготовим данные с форматированием значений
-  const data = rows.map(r => ({
-    'Дата и время': formatDate(r.createdAt),
-    'ФИО': r.fullName || '',
-    'Куда': r.destination || '',
-    'От кого': r.fromWhom || '',
-    'Цель': formatPurpose(r.purpose, r.lang),
-    'Язык': (r.lang || '').toUpperCase(),
-  }));
-
-  const worksheet = XLSX.utils.json_to_sheet(data);
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Requests');
-  XLSX.writeFile(workbook, 'requests.xlsx');
+function logout(){
+  clearToken();
+  document.getElementById("adminPanel").style.display = "none";
+  document.getElementById("loginBox").style.display = "block";
 }
 
-function show(section){
-  document.getElementById('loginSection').classList.add('hidden');
-  document.getElementById('tableSection').classList.add('hidden');
-  document.getElementById(section).classList.remove('hidden');
-}
+document.addEventListener("DOMContentLoaded", () =>{
+  const loginBtn = document.getElementById("loginBtn");
+  const logoutBtn = document.getElementById("logoutBtn");
+  const exportCsvBtn = document.getElementById("exportCsvBtn");
+  const exportExcelBtn = document.getElementById("exportExcelBtn");
+  const deleteBtn = document.getElementById("deleteSelectedBtn");
+  const selectAll = document.getElementById("selectAll");
 
-function initLogin(){
-  const loginBtn = document.getElementById('loginBtn');
-  loginBtn.addEventListener('click', () => {
-    const login = document.getElementById('login').value.trim();
-    const password = document.getElementById('password').value;
-    if (login === DEMO_USER.login && password === DEMO_USER.password){
-      setLoggedIn(true);
-      initTable();
-      show('tableSection');
+  loginBtn.addEventListener("click", async () =>{
+    const login = document.getElementById("loginInput").value.trim();
+    const pass = document.getElementById("passwordInput").value;
+    const r = await loginRequest(login, pass);
+    if (r && r.success){
+      saveToken(r.token);
+      document.getElementById("loginBox").style.display = "none";
+      document.getElementById("adminPanel").style.display = "block";
+      document.getElementById("roleLabel").textContent = r.role;
+      enableButtonsForRole(r.role);
+      await loadRequests();
     } else {
-      alert('Неверный логин или пароль');
+      showLoginError(true);
     }
   });
-}
 
-function initTable(){
-  const all = getRequests();
-  renderTable(all);
-  const search = document.getElementById('search');
-  const dateRange = document.getElementById('dateRange');
-  const actionsToggle = document.querySelector('.actions-toggle');
-  const actionsPanel = document.getElementById('actionsPanel');
-  const pageSizeSel = document.getElementById('pageSize');
-  const prevPageBtn = document.getElementById('prevPage');
-  const nextPageBtn = document.getElementById('nextPage');
-  const pageInfo = document.getElementById('pageInfo');
+  logoutBtn.addEventListener("click", () => logout());
 
-  let state = { page: 1 };
+  exportCsvBtn.addEventListener("click", async () =>{
+    const data = await loadRequests();
+    downloadCSV(data, "requests.csv");
+  });
 
-  function currentFiltered(){
-    const byDate = filterByDateRange(all, dateRange.value);
-    return filterRequests(byDate, search.value);
-  }
+  exportExcelBtn.addEventListener("click", async () =>{
+    const data = await loadRequests();
+    // simple Excel-compatible CSV with .xls extension
+    downloadCSV(data, "requests.xls");
+  });
 
-  function rerender(){
-    const size = parseInt(pageSizeSel?.value || '10', 10);
-    const { slice, current, pages } = paginate(currentFiltered(), state.page, size);
-    renderTable(slice);
-    if (pageInfo) pageInfo.textContent = `${current} / ${pages}`;
-    if (prevPageBtn) prevPageBtn.disabled = current <= 1;
-    if (nextPageBtn) nextPageBtn.disabled = current >= pages;
-  }
-
-  search.addEventListener('input', () => { state.page = 1; rerender(); });
-  dateRange.addEventListener('change', () => { state.page = 1; rerender(); });
-  if (pageSizeSel) pageSizeSel.addEventListener('change', () => { state.page = 1; rerender(); });
-  if (prevPageBtn) prevPageBtn.addEventListener('click', () => { state.page--; rerender(); });
-  if (nextPageBtn) nextPageBtn.addEventListener('click', () => { state.page++; rerender(); });
-
-  document.getElementById('exportBtn').addEventListener('click', () => exportCSV(currentFiltered()));
-  const exportXlsxBtn = document.getElementById('exportXlsxBtn');
-  if (exportXlsxBtn) exportXlsxBtn.addEventListener('click', () => exportXLSX(currentFiltered()))
-  document.getElementById('logoutBtn').addEventListener('click', () => { setLoggedIn(false); show('loginSection'); });
-
-  // Коллапс панели действий только для узких экранов
-  if (actionsToggle && actionsPanel) {
-    actionsToggle.addEventListener('click', () => {
-      actionsPanel.classList.toggle('open');
-      const expanded = actionsPanel.classList.contains('open');
-      actionsToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  deleteBtn.addEventListener("click", async () =>{
+    const chks = Array.from(document.querySelectorAll(".row-chk:checked"));
+    if (!chks.length) return alert("Нет выбранных");
+    const ids = chks.map(c => parseInt(c.dataset.id,10));
+    const token = getToken();
+    const res = await fetch("/api/requests/delete", {
+      method: "POST",
+      headers: { "Content-Type":"application/json", "Authorization":"Bearer "+token },
+      body: JSON.stringify({ ids })
     });
-  }
+    if (res.ok){ await loadRequests(); }
+  });
 
-  // первичный рендер с пагинацией
-  rerender();
-}
+  selectAll.addEventListener("change", ()=>{
+    const checked = selectAll.checked;
+    document.querySelectorAll(".row-chk").forEach(c=>c.checked = checked);
+  });
 
-document.addEventListener('DOMContentLoaded', () => {
-  if (isLoggedIn()) {
-    initTable();
-    show('tableSection');
-  } else {
-    initLogin();
-    show('loginSection');
-  }
+  // if already logged in
+  (async ()=>{
+    const token = getToken();
+    if (token){
+      // try to load and display
+      const res = await fetch("/api/validate", { headers: { "Authorization":"Bearer "+token } });
+      if (res.ok){
+        const j = await res.json();
+        document.getElementById("loginBox").style.display = "none";
+        document.getElementById("adminPanel").style.display = "block";
+        document.getElementById("roleLabel").textContent = j.role;
+        enableButtonsForRole(j.role);
+        await loadRequests();
+      } else {
+        clearToken();
+      }
+    }
+  })();
 });
-
-

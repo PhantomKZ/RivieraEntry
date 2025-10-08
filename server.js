@@ -1,119 +1,91 @@
-import express from "express";
-import fs from "fs";
-import path from "path";
-import crypto from "crypto";
+const express = require('express');
+const path = require('path');
+const cors = require('cors');
+const db = require('./src/db.js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const __dirname = path.resolve();
-const DB_FILE = path.join(__dirname, "db", "db.json");
-const USERS = [
-  { login: "admin", password: "admin", role: "admin" },
-  { login: "reseption", password: "Riviera2025!", role: "reseption" }
-];
-const SECRET = process.env.SECRET || "riviera_secret";
 
+// --- ENV ---
+const ADMIN_LOGIN = process.env.ADMIN_LOGIN || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'riviera-secret-token';
+
+// --- Middlewares ---
+app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.urlencoded({ extended: true }));
 
-// read db
-function readDB(){
+// --- Static: serve project root (index.html, admin.html, assets) ---
+app.use(express.static(path.join(__dirname)));
+
+// --- Auth ---
+app.post('/api/auth/login', (req, res) => {
   try {
-    if (!fs.existsSync(DB_FILE)) return [];
-    const txt = fs.readFileSync(DB_FILE, "utf-8") || "[]";
-    return JSON.parse(txt);
-  } catch(e){ console.error("readDB error", e); return []; }
-}
+    const { login, password } = req.body || {};
+    if (String(login) === String(ADMIN_LOGIN) && String(password) === String(ADMIN_PASSWORD)) {
+      return res.json({ token: ADMIN_TOKEN, role: 'admin' });
+    }
+    return res.status(401).json({ error: 'Unauthorized' });
+  } catch (e) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
 
-function writeDB(data){
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-}
-
-// simple token: HMAC of role with secret + timestamp
-function genToken(role){
-  const payload = JSON.stringify({ role, t: Date.now() });
-  const sig = crypto.createHmac("sha256", SECRET).update(payload).digest("hex");
-  return Buffer.from(payload).toString("base64") + "." + sig;
-}
-
-function validateToken(token){
+function requireAuth(req, res, next){
   try {
-    const [b64, sig] = token.split(".");
-    const payload = Buffer.from(b64, "base64").toString("utf-8");
-    const expected = crypto.createHmac("sha256", SECRET).update(payload).digest("hex");
-    if (expected !== sig) return null;
-    const obj = JSON.parse(payload);
-    // optional expiry 7 days
-    if (Date.now() - obj.t > 1000*60*60*24*7) return null;
-    return obj;
-  } catch(e){ return null; }
+    const header = req.headers['authorization'] || '';
+    const [, token] = header.split(' ');
+    if (token === ADMIN_TOKEN) return next();
+  } catch {}
+  return res.status(401).json({ error: 'Unauthorized' });
 }
 
-// login
-app.post("/api/login", (req, res) => {
-  const { login, password } = req.body || {};
-  const u = USERS.find(x=>x.login === login && x.password === password);
-  if (!u) return res.json({ success: false });
-  const token = genToken(u.role);
-  return res.json({ success: true, token, role: u.role });
+// --- Requests API ---
+app.post('/api/requests', async (req, res) => {
+  try {
+    const created = await db.createRequest(req.body || {});
+    res.json({ success: true, id: created.id });
+  } catch (error) {
+    console.error('Ошибка при сохранении заявки:', error);
+    res.status(400).json({ success: false, error: error.message || 'Ошибка сервера' });
+  }
 });
 
-// validate token
-app.get("/api/validate", (req, res) => {
-  const h = req.headers.authorization || "";
-  const token = h.replace(/^Bearer\s+/i,"");
-  const obj = validateToken(token);
-  if (!obj) return res.status(401).json({ error: "invalid" });
-  return res.json({ role: obj.role });
+app.get('/api/requests', async (req, res) => {
+  try {
+    const { q, range } = req.query || {};
+    const rows = await db.listRequests({ q, range });
+    res.json(rows);
+  } catch (error) {
+    console.error('Ошибка при загрузке заявок:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
 });
 
-// post request
-app.post("/api/requests", (req, res) => {
-  const data = readDB();
-  const newReq = req.body || {};
-  newReq.createdAt = newReq.createdAt || new Date().toISOString();
-  data.push(newReq);
-  writeDB(data);
-  return res.json({ success: true });
+app.delete('/api/requests/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+    await db.deleteRequest(id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Ошибка при удалении заявки:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
 });
 
-// get requests (requires auth)
-app.get("/api/requests", (req, res) => {
-  const h = req.headers.authorization || "";
-  const token = h.replace(/^Bearer\s+/i,"");
-  const obj = validateToken(token);
-  if (!obj) return res.status(401).json({ error: "unauthorized" });
-  const data = readDB();
-  return res.json(data);
+// Explicit routes for main pages (optional, but safe for SPA-less setup)
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
-// delete selected (admin only)
-app.post("/api/requests/delete", (req, res) => {
-  const h = req.headers.authorization || "";
-  const token = h.replace(/^Bearer\s+/i,"");
-  const obj = validateToken(token);
-  if (!obj || obj.role !== "admin") return res.status(401).json({ error: "unauthorized" });
-  const ids = req.body.ids || [];
-  let data = readDB();
-  // ids correspond to indices as used in admin table; remove by index
-  // create new array excluding indices
-  const keep = data.filter((_, idx) => !ids.includes(idx));
-  writeDB(keep);
-  return res.json({ success: true });
-});
-
-// serve admin page from /admin route
-app.get("/admin", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "admin.html"));
-});
-
-// fallback to index.html for SPA-like behaviour
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
-
-app.listen(PORT, "0.0.0.0", () => {
-  if (!fs.existsSync(path.join(__dirname, "db"))) fs.mkdirSync(path.join(__dirname, "db"));
-  if (!fs.existsSync(DB_FILE)) writeDB([]);
-  console.log(`🌐 Server started on port ${PORT}`);
+// --- Start ---
+app.listen(PORT, '0.0.0.0', async () => {
+  await db.init();
+  console.log(`🌐 Сервер запущен на порту ${PORT}`);
+  console.log(`DB: ${process.env.DB_PATH || path.join(__dirname, 'data', 'riviera.sqlite')}`);
 });

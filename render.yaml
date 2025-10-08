@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: riviera-entry
+    env: node
+    plan: free
+    buildCommand: npm install && npm run client:build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DB_PATH
+        value: /var/data/riviera.sqlite
+      - key: ADMIN_LOGIN
+        value: admin
+      - key: ADMIN_PASSWORD
+        value: admin
+      - key: ADMIN_TOKEN
+        value: riviera-secret-token
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+
